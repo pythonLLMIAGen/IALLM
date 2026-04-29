@@ -1,226 +1,28 @@
-import time
-import requests
-import csv
-from datetime import datetime
+from dotenv import load_dotenv
+load_dotenv()
 
-# ====================================
-# CONFIGURATION
-# ====================================
-MODELS = {
-    "Gemma": {
-        "url": "https://gemma-4-31b-it.apps.gpu-prod.ocp.cagip.group.gca/v1/chat/completions",
-        "model_id": "/google/gemma-4-31b",
-        "api_key": "ta-clé-ici"
-    },
-    "Qwen": {
-        "url": "https://qwen-....apps.gpu-prod.ocp.cagip.group.gca/v1/chat/completions",
-        "model_id": "/model/Qwen3-VL-32B-Instruct",
-        "api_key": "ta-clé-ici"
-    }
-}
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, load_index_from_storage, StorageContext
+from llama_index.core.storage.docstore import SimpleDocumentStore
+from llama_index.core.vector_stores import SimpleVectorStore
+from llama_index.core.storage.index_store import SimpleIndexStore
+from llama_index.core.graph_stores import SimpleGraphStore
 
-PROXIES = {
-    "https": "http://proxy-intra.par.emea.cib:8080"
-}
+documents = SimpleDirectoryReader('news').load_data()
 
-SYSTEM_PROMPT = """Tu es un assistant CRM intelligent. Tu aides les conseillers 
-clientèle à répondre aux demandes des clients de façon professionnelle, 
-empathique et efficace. Tu analyses le contexte client et proposes 
-des réponses adaptées en français."""
+index = VectorStoreIndex.from_documents(documents)
 
-PROMPTS = [
-    {
-        "id": "P1",
-        "categorie": "Retard livraison",
-        "prompt": """Client ID: 12345. Historique: 3 commandes en retard ce mois, 
-        2 réclamations non résolues. Le client appelle et dit: 
-        'Pourquoi mes livraisons sont toujours en retard ? 
-        Je commence à perdre patience !'
-        Comment répondre au client ?"""
-    },
-    {
-        "id": "P2",
-        "categorie": "Fidélisation",
-        "prompt": """Profil client: Premium depuis 2 ans, CA annuel 50k€, 
-        score satisfaction 3/10 ce trimestre, 2 réclamations ouvertes. 
-        Le client menace de partir chez un concurrent.
-        Propose une stratégie de fidélisation adaptée à ce profil."""
-    },
-    {
-        "id": "P3",
-        "categorie": "Facturation complexe",
-        "prompt": """Client reçoit une facture de 2500€ au lieu de 1800€ habituellement. 
-        Il a souscrit à une option Premium le mois dernier mais n'en était pas conscient.
-        Il conteste la facture et demande un remboursement.
-        Quelle est la meilleure approche ?"""
-    },
-    {
-        "id": "P4",
-        "categorie": "Client mécontent récurrent",
-        "prompt": """Client appelle pour la 3ème fois ce mois pour le même problème 
-        de facturation non résolu. Les deux conseillers précédents n'ont pas 
-        pu régler le problème. Le client est très mécontent et demande 
-        à parler à un responsable.
-        Comment gérer cette escalade ?"""
-    },
-    {
-        "id": "P5",
-        "categorie": "Demande multilingue",
-        "prompt": """My last invoice shows an amount of 3200€ that I don't recognize. 
-        I never agreed to this amount. I want a full refund immediately 
-        or I will contact my lawyer.
-        How should the advisor handle this situation ?"""
-    },
-    {
-        "id": "P6",
-        "categorie": "Analyse prédictive churn",
-        "prompt": """Données client: 
-        - 5 contacts support ce mois (moyenne habituelle: 1)
-        - Dernière commande annulée
-        - Score NPS: 2/10
-        - Contrat renouvellement dans 30 jours
-        Analyse le risque de churn et propose des actions concrètes."""
-    },
-    {
-        "id": "P7",
-        "categorie": "Cas juridique",
-        "prompt": """Un client affirme avoir été débité deux fois pour la même commande. 
-        Il a des relevés bancaires comme preuve. 
-        Notre système ne montre qu'un seul débit.
-        Il menace de porter plainte.
-        Quelle procédure suivre ?"""
-    }
-]
+# save to disk
+index.storage_context.persist()
 
-# ====================================
-# TEST
-# ====================================
-def test_model(model_name, model_config, prompt_data):
-    start = time.time()
-    try:
-        response = requests.post(
-            model_config["url"],
-            headers={
-                "Authorization": f"Bearer {model_config['api_key']}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": model_config["model_id"],
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt_data["prompt"]}
-                ],
-                "max_tokens": 500
-            },
-            proxies=PROXIES,
-            timeout=120
-        )
-        latency = time.time() - start
-        data = response.json()
+# load from disk
+storage_context = StorageContext.from_defaults(
+    docstore=SimpleDocumentStore.from_persist_dir('storage'),
+    vector_store=SimpleVectorStore.from_persist_dir('storage'),
+    index_store=SimpleIndexStore.from_persist_dir('storage'),
+    graph_store=SimpleGraphStore.from_persist_dir('storage')
+)
+index = load_index_from_storage(storage_context)
 
-        if response.status_code == 200:
-            content = data["choices"][0]["message"]["content"]
-            tokens = data["usage"]["total_tokens"]
-            return {
-                "model": model_name,
-                "id": prompt_data["id"],
-                "categorie": prompt_data["categorie"],
-                "latency": round(latency, 2),
-                "tokens": tokens,
-                "status": "OK",
-                "response": content
-            }
-        else:
-            return {
-                "model": model_name,
-                "id": prompt_data["id"],
-                "categorie": prompt_data["categorie"],
-                "latency": round(latency, 2),
-                "tokens": 0,
-                "status": f"ERREUR {response.status_code}",
-                "response": str(data)
-            }
-
-    except Exception as e:
-        latency = time.time() - start
-        return {
-            "model": model_name,
-            "id": prompt_data["id"],
-            "categorie": prompt_data["categorie"],
-            "latency": round(latency, 2),
-            "tokens": 0,
-            "status": "EXCEPTION",
-            "response": str(e)
-        }
-
-# ====================================
-# MAIN
-# ====================================
-if __name__ == "__main__":
-    print("=" * 60)
-    print("BENCHMARK LLM ON-PREMISE - CRM ASSISTANT")
-    print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 60)
-
-    all_results = []
-
-    for model_name, model_config in MODELS.items():
-        print(f"\n{'=' * 40}")
-        print(f"TEST MODELE : {model_name}")
-        print(f"{'=' * 40}")
-        model_results = []
-
-        for prompt_data in PROMPTS:
-            print(f"\n[{prompt_data['id']}] {prompt_data['categorie']}")
-            print(f"  En cours...", end=" ", flush=True)
-
-            result = test_model(model_name, model_config, prompt_data)
-            model_results.append(result)
-            all_results.append(result)
-
-            print(f"[{result['status']}] {result['latency']}s | {result['tokens']} tokens")
-
-            if result["status"] == "OK":
-                print(f"  Réponse: {result['response'][:300]}...")
-
-        # Résumé par modèle
-        ok = [r for r in model_results if r["status"] == "OK"]
-        if ok:
-            avg_latency = sum(r["latency"] for r in ok) / len(ok)
-            avg_tokens = sum(r["tokens"] for r in ok) / len(ok)
-            print(f"\nRésumé {model_name}:")
-            print(f"  Succès      : {len(ok)}/{len(PROMPTS)}")
-            print(f"  Latence moy : {avg_latency:.2f}s")
-            print(f"  Tokens moy  : {avg_tokens:.0f}")
-
-    # ====================================
-    # COMPARAISON FINALE
-    # ====================================
-    print("\n" + "=" * 60)
-    print("COMPARAISON FINALE")
-    print("=" * 60)
-
-    latences = {}
-    for model_name in MODELS.keys():
-        ok = [r for r in all_results if r["model"] == model_name and r["status"] == "OK"]
-        if ok:
-            avg_lat = sum(r["latency"] for r in ok) / len(ok)
-            avg_tok = sum(r["tokens"] for r in ok) / len(ok)
-            latences[model_name] = avg_lat
-            print(f"{model_name:10} | Latence moy: {avg_lat:.2f}s | Tokens moy: {avg_tok:.0f} | Succès: {len(ok)}/{len(PROMPTS)}")
-
-    if latences:
-        vainqueur = min(latences, key=latences.get)
-        print(f"\nVainqueur latence : {vainqueur} 🏆")
-
-    # ====================================
-    # EXPORT CSV
-    # ====================================
-    filename = f"benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    with open(filename, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["model", "id", "categorie", "latency", "tokens", "status", "response"])
-        writer.writeheader()
-        writer.writerows(all_results)
-
-    print(f"\nRésultats exportés : {filename}")
-    print("Benchmark terminé !")
+query_engine = index.as_query_engine()
+r = query_engine.query("Who are the main exporters of Coal to China? What is the role of Indonesia in this?")
+print(r)
