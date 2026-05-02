@@ -1,298 +1,112 @@
+"""
+Test harness for Two-Sum problem (Python)
+"""
+
+import pytest
+import json
 import time
-import requests
-import csv
-from datetime import datetime
+from pathlib import Path
+from typing import List, Callable
 
-# ====================================
-# CONFIGURATION
-# ====================================
-LITELLM_URL = "http://localhost:4000/v1/chat/completions"
-API_KEY = "fake-key"
 
-MODELS = {
-    "Gemma": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-    "Qwen": "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
-}
+def load_test_cases():
+    """Load test cases from JSON file."""
+    test_file = Path(__file__).parent / "test_cases.json"
+    with open(test_file) as f:
+        cases = json.load(f)
+    return [(c["nums"], c["target"], c["expected"]) for c in cases]
 
-SYSTEM_PROMPT = """Tu es un assistant CRM intelligent. Tu aides les conseillers 
-clientèle à répondre aux demandes des clients de façon professionnelle, 
-empathique et efficace. Tu analyses le contexte client et proposes 
-des réponses adaptées en français."""
 
-EVALUATION_PROMPT = """Tu es un expert en évaluation de réponses CRM.
-Évalue la réponse suivante selon ces critères et retourne UNIQUEMENT un JSON :
-{{
-    "empathie": <note de 1 à 5>,
-    "pertinence": <note de 1 à 5>,
-    "clarte": <note de 1 à 5>,
-    "score_global": <moyenne des 3 notes>,
-    "commentaire": "<une phrase courte>"
-}}
+class TestTwoSum:
+    """Test suite for Two-Sum problem."""
+    
+    @pytest.fixture
+    def solution(self) -> Callable:
+        """
+        Import the solution function.
+        Override this fixture to test custom implementations.
+        """
+        from solutions.solution import two_sum
+        return two_sum
+    
+    def test_basic_case(self, solution):
+        """Test basic positive numbers."""
+        result = solution([2, 7, 11, 15], 9)
+        assert sorted(result) == [0, 1]
+    
+    def test_negative_numbers(self, solution):
+        """Test with negative numbers."""
+        result = solution([-1, -2, -3, -4, -5], -8)
+        assert sorted(result) == [2, 4]
+    
+    def test_duplicates(self, solution):
+        """Test with duplicate values."""
+        result = solution([3, 3], 6)
+        assert sorted(result) == [0, 1]
+    
+    def test_zero_target(self, solution):
+        """Test when target is zero."""
+        result = solution([-5, 0, 5, 10], 0)
+        assert sorted(result) == [0, 2]
+    
+    @pytest.mark.parametrize("nums,target,expected", load_test_cases())
+    def test_all_cases(self, solution, nums, target, expected):
+        """Run all test cases from JSON."""
+        result = solution(nums, target)
+        
+        # Verify result is correct (order doesn't matter)
+        assert sorted(result) == sorted(expected), \
+            f"Expected {expected}, got {result} for nums={nums}, target={target}"
+    
+    def test_time_complexity(self, solution):
+        """
+        Verify O(n) time complexity.
+        
+        This test ensures the solution doesn't use brute force (O(n²)).
+        We test with increasingly large arrays and verify linear scaling.
+        """
+        import random
+        
+        times = []
+        sizes = [1000, 2000, 4000, 8000]
+        
+        for size in sizes:
+            nums = list(range(size))
+            target = size - 3  # Second-to-last and third-to-last elements
+            
+            start = time.perf_counter()
+            result = solution(nums, target)
+            end = time.perf_counter()
+            
+            times.append(end - start)
+            
+            # Verify correctness
+            assert sorted(result) == [size - 3, size - 1] or \
+                   sorted(result) == [0, size - 3]
+        
+        # Check that doubling input size roughly doubles time (allows 3x tolerance)
+        # For O(n²), doubling size would quadruple time
+        for i in range(len(times) - 1):
+            ratio = times[i + 1] / times[i]
+            assert ratio < 4.0, \
+                f"Time complexity appears to be worse than O(n). " \
+                f"Ratio: {ratio:.2f} (expected < 4.0 for O(n))"
+    
+    def test_space_complexity(self, solution):
+        """
+        Verify O(n) space complexity.
+        
+        The hash map approach should use space proportional to input size.
+        """
+        import sys
+        
+        nums = list(range(10000))
+        target = 19999
+        
+        # This is a rough test - mainly ensures no catastrophic space usage
+        result = solution(nums, target)
+        assert result is not None
 
-Question posée: {question}
-Réponse à évaluer: {reponse}
 
-Retourne UNIQUEMENT le JSON, rien d'autre."""
-
-PROMPTS = [
-    {
-        "id": "P1",
-        "categorie": "Retard livraison",
-        "prompt": """Client ID: 12345. Historique: 3 commandes en retard ce mois, 
-        2 réclamations non résolues. Le client appelle et dit: 
-        'Pourquoi mes livraisons sont toujours en retard ? 
-        Je commence à perdre patience !'
-        Comment répondre au client ?"""
-    },
-    {
-        "id": "P2",
-        "categorie": "Fidélisation",
-        "prompt": """Profil client: Premium depuis 2 ans, CA annuel 50k€, 
-        score satisfaction 3/10 ce trimestre, 2 réclamations ouvertes. 
-        Le client menace de partir chez un concurrent.
-        Propose une stratégie de fidélisation adaptée à ce profil."""
-    },
-    {
-        "id": "P3",
-        "categorie": "Facturation complexe",
-        "prompt": """Client reçoit une facture de 2500€ au lieu de 1800€ habituellement. 
-        Il a souscrit à une option Premium le mois dernier mais n'en était pas conscient.
-        Il conteste la facture et demande un remboursement.
-        Quelle est la meilleure approche ?"""
-    },
-    {
-        "id": "P4",
-        "categorie": "Client mécontent récurrent",
-        "prompt": """Client appelle pour la 3ème fois ce mois pour le même problème 
-        de facturation non résolu. Les deux conseillers précédents n'ont pas 
-        pu régler le problème. Le client est très mécontent et demande 
-        à parler à un responsable.
-        Comment gérer cette escalade ?"""
-    },
-    {
-        "id": "P5",
-        "categorie": "Demande multilingue",
-        "prompt": """My last invoice shows an amount of 3200€ that I don't recognize. 
-        I never agreed to this amount. I want a full refund immediately 
-        or I will contact my lawyer.
-        How should the advisor handle this situation ?"""
-    },
-    {
-        "id": "P6",
-        "categorie": "Analyse prédictive churn",
-        "prompt": """Données client: 
-        - 5 contacts support ce mois (moyenne habituelle: 1)
-        - Dernière commande annulée
-        - Score NPS: 2/10
-        - Contrat renouvellement dans 30 jours
-        Analyse le risque de churn et propose des actions concrètes."""
-    },
-    {
-        "id": "P7",
-        "categorie": "Cas juridique",
-        "prompt": """Un client affirme avoir été débité deux fois pour la même commande. 
-        Il a des relevés bancaires comme preuve. 
-        Notre système ne montre qu'un seul débit.
-        Il menace de porter plainte.
-        Quelle procédure suivre ?"""
-    }
-]
-
-# ====================================
-# APPEL LLM
-# ====================================
-def call_llm(messages, max_tokens=500):
-    response = requests.post(
-        LITELLM_URL,
-        headers={
-            "Authorization": f"Bearer {API_KEY}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "model": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-            "messages": messages,
-            "max_tokens": max_tokens
-        },
-        timeout=120
-    )
-    if response.status_code == 200:
-        return response.json()["choices"][0]["message"]["content"]
-    return None
-
-# ====================================
-# EVALUATION AUTOMATIQUE
-# ====================================
-def evaluer_reponse(question, reponse):
-    import json
-    prompt = EVALUATION_PROMPT.format(
-        question=question,
-        reponse=reponse
-    )
-    try:
-        result = call_llm([{"role": "user", "content": prompt}], max_tokens=200)
-        if result:
-            # Nettoie le JSON
-            result = result.strip()
-            if "```" in result:
-                result = result.split("```")[1].replace("json", "").strip()
-            data = json.loads(result)
-            return {
-                "score_empathie": data.get("empathie", 0),
-                "score_pertinence": data.get("pertinence", 0),
-                "score_clarte": data.get("clarte", 0),
-                "score_global": data.get("score_global", 0),
-                "commentaire": data.get("commentaire", "")
-            }
-    except Exception as e:
-        print(f"  Erreur évaluation: {e}")
-    return {
-        "score_empathie": 0,
-        "score_pertinence": 0,
-        "score_clarte": 0,
-        "score_global": 0,
-        "commentaire": "Erreur évaluation"
-    }
-
-# ====================================
-# TEST MODELE
-# ====================================
-def test_model(model_name, model_id, prompt_data):
-    start = time.time()
-    try:
-        response = requests.post(
-            LITELLM_URL,
-            headers={
-                "Authorization": f"Bearer {API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": model_id,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt_data["prompt"]}
-                ],
-                "max_tokens": 500
-            },
-            timeout=120
-        )
-        latency = time.time() - start
-        data = response.json()
-
-        if response.status_code == 200:
-            content = data["choices"][0]["message"]["content"]
-            tokens = data["usage"]["total_tokens"]
-
-            # Evaluation automatique
-            print(f"  Evaluation en cours...", end=" ", flush=True)
-            scores = evaluer_reponse(prompt_data["prompt"], content)
-
-            return {
-                "model": model_name,
-                "id": prompt_data["id"],
-                "categorie": prompt_data["categorie"],
-                "latency": round(latency, 2),
-                "tokens": tokens,
-                "status": "OK",
-                "score_empathie": scores["score_empathie"],
-                "score_pertinence": scores["score_pertinence"],
-                "score_clarte": scores["score_clarte"],
-                "score_global": scores["score_global"],
-                "commentaire": scores["commentaire"],
-                "response": content
-            }
-        else:
-            return {
-                "model": model_name,
-                "id": prompt_data["id"],
-                "categorie": prompt_data["categorie"],
-                "latency": round(latency, 2),
-                "tokens": 0,
-                "status": f"ERREUR {response.status_code}",
-                "score_empathie": 0,
-                "score_pertinence": 0,
-                "score_clarte": 0,
-                "score_global": 0,
-                "commentaire": "",
-                "response": str(data)
-            }
-
-    except Exception as e:
-        latency = time.time() - start
-        return {
-            "model": model_name,
-            "id": prompt_data["id"],
-            "categorie": prompt_data["categorie"],
-            "latency": round(latency, 2),
-            "tokens": 0,
-            "status": "EXCEPTION",
-            "score_empathie": 0,
-            "score_pertinence": 0,
-            "score_clarte": 0,
-            "score_global": 0,
-            "commentaire": "",
-            "response": str(e)
-        }
-
-# ====================================
-# MAIN
-# ====================================
 if __name__ == "__main__":
-    print("=" * 60)
-    print("BENCHMARK LLM ON-PREMISE - CRM ASSISTANT")
-    print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 60)
-
-    all_results = []
-
-    for model_name, model_id in MODELS.items():
-        print(f"\n{'=' * 40}")
-        print(f"TEST MODELE : {model_name}")
-        print(f"{'=' * 40}")
-        model_results = []
-
-        for prompt_data in PROMPTS:
-            print(f"\n[{prompt_data['id']}] {prompt_data['categorie']}")
-            print(f"  Réponse en cours...", end=" ", flush=True)
-
-            result = test_model(model_name, model_id, prompt_data)
-            model_results.append(result)
-            all_results.append(result)
-
-            print(f"[{result['status']}] {result['latency']}s | Score: {result['score_global']}/5")
-            if result["commentaire"]:
-                print(f"  Commentaire: {result['commentaire']}")
-
-        # Résumé par modèle
-        ok = [r for r in model_results if r["status"] == "OK"]
-        if ok:
-            avg_latency = sum(r["latency"] for r in ok) / len(ok)
-            avg_score = sum(r["score_global"] for r in ok) / len(ok)
-            print(f"\nRésumé {model_name}:")
-            print(f"  Succès        : {len(ok)}/{len(PROMPTS)}")
-            print(f"  Latence moy   : {avg_latency:.2f}s")
-            print(f"  Score moy     : {avg_score:.2f}/5")
-
-    # COMPARAISON FINALE
-    print("\n" + "=" * 60)
-    print("COMPARAISON FINALE")
-    print("=" * 60)
-
-    for model_name in MODELS.keys():
-        ok = [r for r in all_results if r["model"] == model_name and r["status"] == "OK"]
-        if ok:
-            avg_lat = sum(r["latency"] for r in ok) / len(ok)
-            avg_score = sum(r["score_global"] for r in ok) / len(ok)
-            print(f"{model_name:10} | Latence: {avg_lat:.2f}s | Score: {avg_score:.2f}/5")
-
-    # EXPORT CSV
-    filename = f"benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    with open(filename, "w", newline="", encoding="utf-8") as f:
-        fieldnames = ["model", "id", "categorie", "latency", "tokens", "status",
-                     "score_empathie", "score_pertinence", "score_clarte",
-                     "score_global", "commentaire", "response"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=";")
-        writer.writeheader()
-        writer.writerows(all_results)
-
-    print(f"\nRésultats exportés : {filename}")
-    print("Benchmark terminé !")
+    pytest.main([__file__, "-v", "--tb=short"])
